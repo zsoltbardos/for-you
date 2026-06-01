@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Without a single word.">
+  <meta name="theme-color" content="#05060f">
+  <title>·</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: #05060f;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    body {
+      opacity: 0;
+      transition: opacity 2.4s ease;
+    }
+    body.loaded { opacity: 1; }
+
+    #scene { position: fixed; inset: 0; display: block; }
+
+    .grain {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+      opacity: 0.04;
+      mix-blend-mode: overlay;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 160px;
+    }
+    .vignette {
+      position: fixed;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+      background: radial-gradient(ellipse at 50% 48%, transparent 42%, rgba(0,0,0,0.6) 100%);
+    }
+
+    .replay {
+      position: fixed;
+      left: 50%;
+      bottom: 7.5%;
+      transform: translateX(-50%) scale(0.9);
+      z-index: 4;
+      width: 46px;
+      height: 46px;
+      color: rgba(255, 222, 194, 0.55);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 1.6s ease, transform 1.6s ease, color 0.3s ease;
+      cursor: pointer;
+      background: none;
+      border: none;
+    }
+    .replay.show {
+      opacity: 1;
+      transform: translateX(-50%) scale(1);
+      pointer-events: auto;
+      animation: hint 3.6s ease-in-out infinite;
+    }
+    .replay:hover { color: rgba(255, 222, 194, 0.95); }
+    .replay svg { width: 100%; height: 100%; display: block;
+      filter: drop-shadow(0 0 8px rgba(255, 200, 160, 0.5)); }
+
+    @keyframes hint {
+      0%, 100% { opacity: 0.5; }
+      50%       { opacity: 0.9; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      body { opacity: 1; transition: none; }
+      .replay.show { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <div class="grain" aria-hidden="true"></div>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <button class="replay" id="replay" aria-label="play again" title="play again">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+      <path d="M21 3v5h-5"></path>
+    </svg>
+  </button>
+
+  <script>
+  (function () {
+    'use strict';
+
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const canvas = document.getElementById('scene');
+    const ctx = canvas.getContext('2d');
+    const replayBtn = document.getElementById('replay');
+
+    let w = 0, h = 0, dpr = 1, minSide = 0;
+    const DURATION = 42000;
+    let startTime = null;
+    let finished = false;
+
+    // dynamic collections
+    let stars = [], bokeh = [], aurora = [];
+    let trailA = [], trailB = [];
+    let rings = [], flows = [], embers = [], shooting = [];
+    let prevHbA = 0, prevHbB = 0;
+    let bloomFired = false, bloom = null;
+
+    // ── math helpers ──
+    const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+    const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+    const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+    const TAU = Math.PI * 2;
+
+    function heartbeat(ms, period) {
+      const x = (ms % period) / period;
+      const b1 = Math.exp(-Math.pow((x - 0.10) / 0.045, 2));
+      const b2 = 0.6 * Math.exp(-Math.pow((x - 0.24) / 0.05, 2));
+      return b1 + b2;
+    }
+
+    function quad(p, x0, y0, cx, cy, x1, y1) {
+      const m = 1 - p;
+      return [
+        m * m * x0 + 2 * m * p * cx + p * p * x1,
+        m * m * y0 + 2 * m * p * cy + p * p * y1,
+      ];
+    }
+
+    function blend(c1, c2, t) {
+      return [
+        Math.round(lerp(c1[0], c2[0], t)),
+        Math.round(lerp(c1[1], c2[1], t)),
+        Math.round(lerp(c1[2], c2[2], t)),
+      ];
+    }
+
+    // ── setup ──
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = window.innerWidth;
+      h = window.innerHeight;
+      minSide = Math.min(w, h);
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      buildStatic();
+    }
+
+    function buildStatic() {
+      const count = Math.min(Math.floor((w * h) / 6500), 160);
+      stars = Array.from({ length: count }, () => ({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        z: Math.random(),                  // depth → parallax + size
+        r: Math.random() * 1.1 + 0.25,
+        base: Math.random() * 0.45 + 0.06,
+        speed: Math.random() * 0.0006 + 0.0002,
+        phase: Math.random() * TAU,
+      }));
+      bokeh = Array.from({ length: 7 }, () => ({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        r: minSide * (0.04 + Math.random() * 0.09),
+        a: 0.015 + Math.random() * 0.025,
+        dx: (Math.random() - 0.5) * 0.08,
+        dy: (Math.random() - 0.5) * 0.05,
+        phase: Math.random() * TAU,
+      }));
+      aurora = Array.from({ length: 3 }, (_, i) => ({
+        y: 0.16 + i * 0.10,
+        amp: 0.03 + Math.random() * 0.03,
+        len: 1.5 + Math.random(),
+        speed: 0.00012 + Math.random() * 0.0001,
+        phase: Math.random() * TAU,
+        hue: i,
+      }));
+    }
+
+    // ── palette ──
+    const A_COOL = [150, 190, 255], A_WARM = [255, 198, 165];
+    const B_COOL = [200, 178, 255], B_WARM = [255, 168, 178];
+
+    function paintBackground(warmT) {
+      const top = [
+        Math.round(lerp(5, 28, warmT)),
+        Math.round(lerp(6, 16, warmT)),
+        Math.round(lerp(20, 30, warmT)),
+      ];
+      const mid = [
+        Math.round(lerp(10, 52, warmT)),
+        Math.round(lerp(10, 24, warmT)),
+        Math.round(lerp(34, 40, warmT)),
+      ];
+      const bot = [
+        Math.round(lerp(7, 92, warmT)),
+        Math.round(lerp(11, 44, warmT)),
+        Math.round(lerp(26, 38, warmT)),
+      ];
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, `rgb(${top})`);
+      g.addColorStop(0.55, `rgb(${mid})`);
+      g.addColorStop(1, `rgb(${bot})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+
+      if (warmT > 0.01) {
+        const bloomG = ctx.createRadialGradient(w / 2, h * 1.18, 0, w / 2, h * 1.18, h * 0.95);
+        bloomG.addColorStop(0, `rgba(255, 186, 132, ${0.34 * warmT})`);
+        bloomG.addColorStop(1, 'rgba(255, 186, 132, 0)');
+        ctx.fillStyle = bloomG;
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
+
+    function drawAurora(elapsed, warmT) {
+      if (warmT < 0.05) return;
+      for (const a of aurora) {
+        const rgb = blend([90, 130, 200], [255, 150, 140], warmT);
+        const baseY = a.y * h;
+        const alpha = 0.05 * warmT;
+        ctx.beginPath();
+        for (let x = 0; x <= w; x += 24) {
+          const yy = baseY + Math.sin(x / w * TAU * a.len + elapsed * a.speed + a.phase) * a.amp * h;
+          if (x === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+        }
+        for (let x = w; x >= 0; x -= 24) {
+          const yy = baseY + a.amp * h * 0.9 + Math.sin(x / w * TAU * a.len + elapsed * a.speed + a.phase) * a.amp * h;
+          ctx.lineTo(x, yy);
+        }
+        ctx.closePath();
+        const grad = ctx.createLinearGradient(0, baseY - a.amp * h, 0, baseY + a.amp * h);
+        grad.addColorStop(0, `rgba(${rgb},0)`);
+        grad.addColorStop(0.5, `rgba(${rgb},${alpha})`);
+        grad.addColorStop(1, `rgba(${rgb},0)`);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      }
+    }
+
+    function glow(x, y, radius, rgb, alpha) {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+      g.addColorStop(0,   `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`);
+      g.addColorStop(0.4, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha * 0.35})`);
+      g.addColorStop(1,   `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, TAU);
+      ctx.fill();
+    }
+
+    function drawTrail(trail, rgb, baseAlpha) {
+      for (let i = 1; i < trail.length; i++) {
+        const f = i / trail.length;
+        const p0 = trail[i - 1], p1 = trail[i];
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y);
+        ctx.lineTo(p1.x, p1.y);
+        ctx.lineWidth = f * 3.5;
+        ctx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${baseAlpha * f * f})`;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+    }
+
+    function lightPos(elapsed, t) {
+      // orbital courtship: both lights ride one orbit, spiralling inward.
+      const cx = 0.5 * w, cy = 0.5 * h;
+      const danceT = easeInOut(seg(t, 0.10, 0.82));
+      const radiusFrac = lerp(0.66, 0.10, danceT);
+      const slowSpin = elapsed * 0.00018;
+      const theta = -Math.PI / 2 + danceT * (1.85 * TAU) + slowSpin;
+      const yearn = (1 - Math.abs(0.5 - (elapsed % 7000) / 7000) * 2) * 0.006 * easeInOut(seg(t, 0.8, 1));
+      const rx = (radiusFrac + yearn) * w * 0.52;
+      const ry = (radiusFrac + yearn) * h * 0.40;
+      return {
+        a: { x: cx + Math.cos(theta) * rx,        y: cy + Math.sin(theta) * ry },
+        b: { x: cx + Math.cos(theta + Math.PI) * rx, y: cy + Math.sin(theta + Math.PI) * ry },
+        danceT, radiusFrac,
+      };
+    }
+
+    function emitFlows(filament) {
+      // energy flowing across the bridge, both directions
+      if (filament > 0.15 && flows.length < 24 && Math.random() < 0.45) {
+        flows.push({ p: Math.random() < 0.5 ? 0 : 1, dir: Math.random() < 0.5 ? 1 : -1, speed: 0.012 + Math.random() * 0.01, r: 1 + Math.random() * 2 });
+      }
+    }
+
+    function draw(now) {
+      if (startTime === null) startTime = now;
+      const elapsed = now - startTime;
+      const t = clamp(elapsed / DURATION, 0, 1);
+
+      const aIn      = easeOut(seg(t, 0.05, 0.20));
+      const bIn      = easeOut(seg(t, 0.18, 0.34));
+      const warmT    = easeInOut(seg(t, 0.40, 0.95));
+      const filament = easeInOut(seg(t, 0.60, 0.95));
+      const sync     = seg(t, 0.78, 1);
+
+      paintBackground(warmT);
+      ctx.globalCompositeOperation = 'lighter';
+      drawAurora(elapsed, warmT);
+
+      // bokeh depth
+      for (const k of bokeh) {
+        const bx = (k.x + Math.sin(elapsed * 0.0002 + k.phase) * 30 + k.dx * elapsed * 0.02) % (w + 200) - 100;
+        const by = (k.y + k.dy * elapsed * 0.02) % (h + 200) - 100;
+        glow(bx, by, k.r, blend([120, 150, 220], [255, 190, 170], warmT), k.a * (0.6 + 0.4 * warmT));
+      }
+
+      // starfield with parallax + twinkle
+      const starFade = 1 - warmT * 0.5;
+      for (const s of stars) {
+        const tw = 0.5 + 0.5 * Math.sin(elapsed * s.speed + s.phase);
+        const yy = (s.y + Math.sin(elapsed * 0.00005 + s.phase) * s.z * 6);
+        ctx.beginPath();
+        ctx.arc(s.x, yy, s.r * (0.6 + s.z), 0, TAU);
+        ctx.fillStyle = `rgba(235, 240, 255, ${s.base * tw * starFade})`;
+        ctx.fill();
+      }
+
+      // occasional shooting star in the cold half
+      if (warmT < 0.5 && Math.random() < 0.004) {
+        shooting.push({ x: Math.random() * w, y: Math.random() * h * 0.4, vx: 6 + Math.random() * 5, vy: 2 + Math.random() * 2, life: 0, max: 700 });
+      }
+      for (let i = shooting.length - 1; i >= 0; i--) {
+        const sh = shooting[i];
+        sh.life += 16; sh.x += sh.vx; sh.y += sh.vy;
+        if (sh.life > sh.max) { shooting.splice(i, 1); continue; }
+        const a = Math.sin((sh.life / sh.max) * Math.PI) * 0.8;
+        ctx.beginPath();
+        ctx.moveTo(sh.x, sh.y);
+        ctx.lineTo(sh.x - sh.vx * 4, sh.y - sh.vy * 4);
+        ctx.strokeStyle = `rgba(255,255,255,${a})`;
+        ctx.lineWidth = 1.6;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+
+      // ── the two lights ──
+      const { a, b, radiusFrac } = lightPos(elapsed, t);
+      const aRGB = blend(A_COOL, A_WARM, warmT);
+      const bRGB = blend(B_COOL, B_WARM, warmT);
+
+      // build comet trails
+      if (aIn > 0.01) { trailA.push({ x: a.x, y: a.y }); if (trailA.length > 48) trailA.shift(); }
+      if (bIn > 0.01) { trailB.push({ x: b.x, y: b.y }); if (trailB.length > 48) trailB.shift(); }
+      drawTrail(trailA, aRGB, 0.5 * aIn);
+      drawTrail(trailB, bRGB, 0.5 * bIn);
+
+      const breath = 0.5 + 0.5 * Math.sin(elapsed * 0.0013);
+      const hbA = heartbeat(elapsed, 2300);
+      const hbB = heartbeat(elapsed + lerp(800, 0, sync), 2300);  // B's phase converges to A as sync rises
+      const coreR = lerp(minSide * 0.009, minSide * 0.016, easeInOut(seg(t, 0.1, 0.82)));
+      const glowR = coreR * (8 + warmT * 5);
+
+      // heartbeat ripple rings — emitted on each beat's rising peak, so they
+      // visibly fall into sync as the two hearts align near the end.
+      if (prevHbA < 0.8 && hbA >= 0.8 && aIn > 0.3) {
+        rings.push({ x: a.x, y: a.y, r: minSide * 0.02, max: minSide * 0.16, age: 0, life: 1500, rgb: aRGB });
+      }
+      if (prevHbB < 0.8 && hbB >= 0.8 && bIn > 0.3) {
+        rings.push({ x: b.x, y: b.y, r: minSide * 0.02, max: minSide * 0.16, age: 0, life: 1500, rgb: bRGB });
+      }
+      prevHbA = hbA; prevHbB = hbB;
+
+      emitFlows(filament);
+
+      // spark of connection — a bloom shockwave when they first draw close
+      if (!bloomFired && radiusFrac < 0.155) {
+        bloomFired = true;
+        bloom = { age: 0, life: 1600 };
+      }
+      if (bloom) {
+        bloom.age += 16;
+        const bt = bloom.age / bloom.life;
+        if (bt >= 1) { bloom = null; }
+        else {
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+          const rr = easeOut(bt) * minSide * 0.6;
+          const al = (1 - bt) * 0.5;
+          ctx.lineWidth = lerp(6, 0.5, bt);
+          ctx.strokeStyle = `rgba(255, 220, 175, ${al})`;
+          ctx.beginPath(); ctx.arc(mx, my, rr, 0, TAU); ctx.stroke();
+          glow(mx, my, rr * 0.5, [255, 220, 180], al * 0.4);
+        }
+      }
+
+      // heartbeat rings
+      for (let i = rings.length - 1; i >= 0; i--) {
+        const r = rings[i];
+        r.age += 16;
+        const rt = r.age / r.life;
+        if (rt >= 1) { rings.splice(i, 1); continue; }
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, lerp(r.r, r.max, easeOut(rt)), 0, TAU);
+        ctx.strokeStyle = `rgba(${r.rgb[0]},${r.rgb[1]},${r.rgb[2]},${(1 - rt) * 0.28})`;
+        ctx.lineWidth = lerp(2, 0.4, rt);
+        ctx.stroke();
+      }
+
+      // the bridge between them
+      const mcx = (a.x + b.x) / 2;
+      const mcy = (a.y + b.y) / 2 + lerp(30, 2, filament);
+      if (filament > 0.001) {
+        ctx.save();
+        ctx.lineWidth = lerp(0.5, 2.0, filament) * (0.85 + 0.15 * breath);
+        ctx.strokeStyle = `rgba(255, 216, 172, ${0.6 * filament})`;
+        ctx.shadowColor = 'rgba(255, 216, 172, 0.8)';
+        ctx.shadowBlur = 18 * filament;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.quadraticCurveTo(mcx, mcy, b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+
+        // particles of light passing back and forth
+        for (let i = flows.length - 1; i >= 0; i--) {
+          const fl = flows[i];
+          fl.p += fl.speed * fl.dir;
+          if (fl.p < 0 || fl.p > 1) { flows.splice(i, 1); continue; }
+          const pt = quad(fl.p, a.x, a.y, mcx, mcy, b.x, b.y);
+          const a2 = Math.sin(fl.p * Math.PI) * filament;
+          glow(pt[0], pt[1], fl.r * 6, [255, 226, 180], 0.7 * a2);
+        }
+      }
+
+      // cores + glow
+      const drawCore = (pt, rgb, hb, inT) => {
+        if (inT <= 0) return;
+        glow(pt.x, pt.y, glowR, rgb, (0.5 + 0.12 * breath) * inT);
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, coreR * (0.92 + 0.12 * hb), 0, TAU);
+        ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${0.97 * inT})`;
+        ctx.fill();
+      };
+      drawCore(a, aRGB, hbA, aIn);
+      drawCore(b, bRGB, hbB, bIn);
+
+      // faint heart halo at the climax — felt more than seen
+      if (sync > 0) {
+        const hs = minSide * 0.16 * (0.92 + 0.08 * breath);
+        const al = 0.06 * sync;
+        ctx.save();
+        ctx.translate(mcx, mcy);
+        ctx.strokeStyle = `rgba(255, 200, 175, ${al})`;
+        ctx.lineWidth = 2;
+        ctx.shadowColor = 'rgba(255,200,175,0.5)';
+        ctx.shadowBlur = 20;
+        ctx.beginPath();
+        for (let i = 0; i <= 60; i++) {
+          const ang = (i / 60) * TAU;
+          // parametric heart
+          const hx = 16 * Math.pow(Math.sin(ang), 3);
+          const hy = -(13 * Math.cos(ang) - 5 * Math.cos(2 * ang) - 2 * Math.cos(3 * ang) - Math.cos(4 * ang));
+          const px = (hx / 16) * hs;
+          const py = (hy / 16) * hs;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // a glimmer of warm light low on the screen — like the pair reflected
+      // on dark water, shimmering with the breath of the scene
+      if (warmT > 0.2) {
+        const waterY = h * 0.9;
+        const wob = Math.sin(elapsed * 0.0016) * minSide * 0.02;
+        const shimmer = (0.6 + 0.4 * breath) * warmT;
+        glow((a.x + b.x) / 2 + wob, waterY, minSide * 0.34, [255, 196, 150], 0.12 * shimmer);
+        glow(a.x * 0.6 + mcx * 0.4 - wob, waterY + minSide * 0.02, glowR * 0.7, aRGB, 0.16 * shimmer);
+        glow(b.x * 0.6 + mcx * 0.4 + wob, waterY + minSide * 0.02, glowR * 0.7, bRGB, 0.16 * shimmer);
+      }
+
+      // embers rising through the warm air
+      if (warmT > 0.15 && embers.length < 30 && Math.random() < 0.3) {
+        embers.push({ x: lerp(w * 0.25, w * 0.75, Math.random()), y: h + 10, r: 1 + Math.random() * 2.6, vy: 0.25 + Math.random() * 0.5, drift: (Math.random() - 0.5) * 0.5, life: 0, max: 4500 + Math.random() * 4000, phase: Math.random() * TAU });
+      }
+      for (let i = embers.length - 1; i >= 0; i--) {
+        const e = embers[i];
+        e.life += 16; e.y -= e.vy; e.x += e.drift + Math.sin(e.life * 0.002 + e.phase) * 0.3;
+        const lt = e.life / e.max;
+        if (lt >= 1 || e.y < -10) { embers.splice(i, 1); continue; }
+        glow(e.x, e.y, e.r * 6, [255, 212, 162], Math.sin(lt * Math.PI) * 0.5 * warmT);
+      }
+
+      ctx.globalCompositeOperation = 'source-over';
+
+      if (t >= 1 && !finished) { finished = true; replayBtn.classList.add('show'); }
+      requestAnimationFrame(draw);
+    }
+
+    function drawStatic() {
+      paintBackground(0.85);
+      ctx.globalCompositeOperation = 'lighter';
+      drawAurora(0, 0.85);
+      for (const s of stars) {
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, TAU);
+        ctx.fillStyle = `rgba(235,240,255,${s.base * 0.5})`;
+        ctx.fill();
+      }
+      const cx = 0.5 * w, cy = 0.5 * h, gx = minSide * 0.052;
+      const aRGB = blend(A_COOL, A_WARM, 0.85), bRGB = blend(B_COOL, B_WARM, 0.85);
+      ctx.save();
+      ctx.lineWidth = 1.8; ctx.strokeStyle = 'rgba(255,216,172,0.55)';
+      ctx.shadowColor = 'rgba(255,216,172,0.8)'; ctx.shadowBlur = 18;
+      ctx.beginPath(); ctx.moveTo(cx - gx, cy); ctx.quadraticCurveTo(cx, cy + 4, cx + gx, cy); ctx.stroke();
+      ctx.restore();
+      glow(cx - gx, cy, minSide * 0.13, aRGB, 0.5);
+      glow(cx + gx, cy, minSide * 0.13, bRGB, 0.5);
+      ctx.beginPath(); ctx.arc(cx - gx, cy, minSide * 0.016, 0, TAU);
+      ctx.fillStyle = `rgba(${aRGB[0]},${aRGB[1]},${aRGB[2]},0.97)`; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + gx, cy, minSide * 0.016, 0, TAU);
+      ctx.fillStyle = `rgba(${bRGB[0]},${bRGB[1]},${bRGB[2]},0.97)`; ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    function restart() {
+      startTime = null; finished = false;
+      trailA = []; trailB = []; rings = []; flows = []; embers = []; shooting = [];
+      prevHbA = 0; prevHbB = 0; bloomFired = false; bloom = null;
+      replayBtn.classList.remove('show');
+    }
+
+    replayBtn.addEventListener('click', (e) => { e.stopPropagation(); restart(); });
+    canvas.addEventListener('pointerdown', () => { if (finished) restart(); });
+
+    window.addEventListener('resize', () => { resize(); if (reduceMotion) drawStatic(); });
+    window.addEventListener('load', () => document.body.classList.add('loaded'));
+    setTimeout(() => document.body.classList.add('loaded'), 800);
+
+    resize();
+    if (reduceMotion) { drawStatic(); replayBtn.remove(); }
+    else { requestAnimationFrame(draw); }
+  })();
+  </script>
+</body>
+</html>

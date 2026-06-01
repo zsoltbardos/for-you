@@ -1,6 +1,13 @@
 # For You
 
-A quiet, mobile-first page — love, care, and hope at the end of the tunnel.
+A quiet, mobile-first gift — love, care, and hope at the end of the tunnel.
+
+Two pages:
+
+- **`index.html`** — the wordless film. Two lights find each other in the dark,
+  orbit, and are bridged by warm light at dawn. No text; it just plays.
+- **`letter.html`** — the worded letter. An airy, scroll-through piece that only
+  hints at love, ending on three barely-visible words.
 
 ## Deploy to GitHub Pages
 
@@ -33,11 +40,18 @@ Then visit `http://localhost:8080`.
 
 ## Customize
 
-- Edit the lines in `index.html` — each `.panel` holds a short verse made of
-  `.verse__line` spans. Keep them brief; the whole piece is built on restraint.
+**The film (`index.html`, self-contained):**
+
+- Pacing lives in the `DURATION` constant and the timeline phases inside `draw()`
+  (`aIn`, `bIn`, `warmT`, `filament`, `sync`).
+- `lightPos()` controls the orbit — how far apart the two lights start and how
+  close they end up (they never quite meet).
+- The cold→warm palette is in `paintBackground()` and the light colors
+  `A_COOL/A_WARM`, `B_COOL/B_WARM`.
+
+**The letter (`letter.html`, uses `css/style.css` + `js/main.js`):**
+
+- Each `.panel` holds a short verse of `.verse__line` spans. Keep them brief.
 - The three barely-visible words live in the `.whisper` element in the finale.
 - Change `"— you know who."` (the `.sign__text`) to your name or sign-off.
-- Adjust the palette and the cold→warm journey in `css/style.css` under `:root`
-  and the `.warmth` overlay.
-- The two converging lights are drawn in `js/main.js` (`orbPositions` controls
-  where they start and how close they end up).
+- Palette and the cold→warm journey are in `css/style.css` under `:root`.
