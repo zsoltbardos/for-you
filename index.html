@@ -14,6 +14,8 @@
       background: #05060f;
       overflow: hidden;
       touch-action: manipulation;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
     }
 
     body {
@@ -22,7 +24,7 @@
     }
     body.loaded { opacity: 1; }
 
-    #scene { position: fixed; inset: 0; display: block; }
+    #scene { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
 
     .grain {
       position: fixed;
@@ -45,7 +47,7 @@
     .replay {
       position: fixed;
       left: 50%;
-      bottom: 7.5%;
+      bottom: max(7.5%, calc(env(safe-area-inset-bottom) + 1.25rem));
       transform: translateX(-50%) scale(0.9);
       z-index: 4;
       width: 46px;
@@ -100,7 +102,7 @@
     const ctx = canvas.getContext('2d');
     const replayBtn = document.getElementById('replay');
 
-    let w = 0, h = 0, dpr = 1, minSide = 0;
+    let w = 0, h = 0, dpr = 1, minSide = 0, small = false;
     const DURATION = 42000;
     let startTime = null;
     let finished = false;
@@ -149,14 +151,17 @@
       w = window.innerWidth;
       h = window.innerHeight;
       minSide = Math.min(w, h);
+      small = minSide < 480;          // phones: trim particle load for smoothness
       canvas.width = w * dpr;
       canvas.height = h * dpr;
+      canvas.style.width = w + 'px';  // canvas is a replaced element — pin its
+      canvas.style.height = h + 'px'; // CSS size to the viewport, not the bitmap
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       buildStatic();
     }
 
     function buildStatic() {
-      const count = Math.min(Math.floor((w * h) / 6500), 160);
+      const count = Math.min(Math.floor((w * h) / (small ? 9000 : 6500)), small ? 90 : 160);
       stars = Array.from({ length: count }, () => ({
         x: Math.random() * w,
         y: Math.random() * h,
@@ -166,7 +171,7 @@
         speed: Math.random() * 0.0006 + 0.0002,
         phase: Math.random() * TAU,
       }));
-      bokeh = Array.from({ length: 7 }, () => ({
+      bokeh = Array.from({ length: small ? 5 : 7 }, () => ({
         x: Math.random() * w,
         y: Math.random() * h,
         r: minSide * (0.04 + Math.random() * 0.09),
@@ -290,7 +295,7 @@
 
     function emitFlows(filament) {
       // energy flowing across the bridge, both directions
-      if (filament > 0.15 && flows.length < 24 && Math.random() < 0.45) {
+      if (filament > 0.15 && flows.length < (small ? 16 : 24) && Math.random() < 0.45) {
         flows.push({ p: Math.random() < 0.5 ? 0 : 1, dir: Math.random() < 0.5 ? 1 : -1, speed: 0.012 + Math.random() * 0.01, r: 1 + Math.random() * 2 });
       }
     }
@@ -482,7 +487,7 @@
       }
 
       // embers rising through the warm air
-      if (warmT > 0.15 && embers.length < 30 && Math.random() < 0.3) {
+      if (warmT > 0.15 && embers.length < (small ? 20 : 30) && Math.random() < 0.3) {
         embers.push({ x: lerp(w * 0.25, w * 0.75, Math.random()), y: h + 10, r: 1 + Math.random() * 2.6, vy: 0.25 + Math.random() * 0.5, drift: (Math.random() - 0.5) * 0.5, life: 0, max: 4500 + Math.random() * 4000, phase: Math.random() * TAU });
       }
       for (let i = embers.length - 1; i >= 0; i--) {
